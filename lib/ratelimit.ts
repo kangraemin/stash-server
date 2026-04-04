@@ -1,29 +1,34 @@
-import { kv } from "@vercel/kv";
+import { getSupabase } from "./supabase";
 
 const FREE_DAILY_LIMIT = 3;
-const TTL_SECONDS = 48 * 60 * 60;
 
-function todayKey(deviceId: string): string {
-  const date = new Date().toISOString().slice(0, 10);
-  return `usage:${deviceId}:${date}`;
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 export async function checkAndIncrement(
   deviceId: string
 ): Promise<{ allowed: boolean; remaining: number }> {
-  const key = todayKey(deviceId);
-  const current = (await kv.get<number>(key)) ?? 0;
+  const supabase = getSupabase();
+  const date = today();
+
+  const { data } = await supabase
+    .from("usage")
+    .select("count")
+    .eq("device_id", deviceId)
+    .eq("used_date", date)
+    .single();
+
+  const current = data?.count ?? 0;
 
   if (current >= FREE_DAILY_LIMIT) {
     return { allowed: false, remaining: 0 };
   }
 
-  await kv.set(key, current + 1, { ex: TTL_SECONDS });
-  return { allowed: true, remaining: FREE_DAILY_LIMIT - current - 1 };
-}
+  await supabase.from("usage").upsert(
+    { device_id: deviceId, used_date: date, count: current + 1 },
+    { onConflict: "device_id,used_date" }
+  );
 
-export async function getRemaining(deviceId: string): Promise<number> {
-  const key = todayKey(deviceId);
-  const current = (await kv.get<number>(key)) ?? 0;
-  return Math.max(0, FREE_DAILY_LIMIT - current);
+  return { allowed: true, remaining: FREE_DAILY_LIMIT - current - 1 };
 }
