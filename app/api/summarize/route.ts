@@ -1,33 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { isPremiumUser } from "@/lib/revenuecat";
+import { checkAndIncrement } from "@/lib/ratelimit";
 
 const MAX_TEXT_LENGTH = 3000;
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX = 10;
-
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return false;
-  }
-
-  entry.count++;
-  return entry.count > RATE_LIMIT_MAX;
-}
-
-function getClientIp(req: NextRequest): string {
-  return (
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    req.headers.get("x-real-ip") ||
-    "unknown"
-  );
-}
-
 const CATEGORIES = ["맛집", "운동", "꿀팁", "제품", "여행", "음악", "기타"] as const;
 
 function buildPrompt(text: string, lang: string): string {
@@ -44,11 +20,11 @@ ${text}`;
 }
 
 export async function POST(req: NextRequest) {
-  const ip = getClientIp(req);
-  if (isRateLimited(ip)) {
+  const deviceId = req.headers.get("x-device-id");
+  if (!deviceId) {
     return NextResponse.json(
-      { error: "Rate limit exceeded. Try again later." },
-      { status: 429 }
+      { error: "x-device-id header is required." },
+      { status: 400 }
     );
   }
 
@@ -68,10 +44,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // 구독 상태 확인 → 무료 유저면 일일 제한 체크
+  const premium = await isPremiumUser(deviceId);
+  let remaining: number | undefined;
+
+  if (!premium) {
+    const result = await checkAndIncrement(deviceId);
+    if (!result.allowed) {
+      return NextResponse.json(
+        {
+          error: "daily_limit_exceeded",
+          message: "오늘 무료 요약을 모두 사용했습니다.",
+          remaining: 0,
+        },
+        { status: 429 }
+      );
+    }
+    remaining = result.remaining;
+  }
+
   const trimmedText = text.slice(0, MAX_TEXT_LENGTH);
 
   try {
-    // SDK 초기화는 핸들러 내부에서 (Vercel 빌드 타임 env 없음 방지)
     const anthropic = new Anthropic();
 
     const message = await anthropic.messages.create({
@@ -99,7 +93,11 @@ export async function POST(req: NextRequest) {
       ? parsed.category
       : "기타";
 
-    return NextResponse.json({ summary, category });
+    return NextResponse.json({
+      summary,
+      category,
+      ...(remaining !== undefined && { remaining }),
+    });
   } catch (err) {
     console.error("Summarize error:", err);
     return NextResponse.json(
