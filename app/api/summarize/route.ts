@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
 
   // 구독 상태 확인 → 무료 유저면 일일 제한 체크
   const premium = await isPremiumUser(deviceId);
-  let remaining: number | undefined;
+  let remaining: number = premium ? -1 : 0;
 
   if (!premium) {
     const result = await checkAndIncrement(deviceId);
@@ -70,7 +70,8 @@ export async function POST(req: NextRequest) {
 
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 256,
+      max_tokens: 200,
+      temperature: 0,
       messages: [
         { role: "user", content: buildPrompt(trimmedText, lang) },
       ],
@@ -84,20 +85,24 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const parsed = JSON.parse(content.text);
+    let summary: string;
+    let category: string;
 
-    const summary = typeof parsed.summary === "string"
-      ? parsed.summary.slice(0, 50)
-      : "";
-    const category = CATEGORIES.includes(parsed.category)
-      ? parsed.category
-      : "기타";
+    try {
+      const parsed = JSON.parse(content.text);
+      summary = typeof parsed.summary === "string"
+        ? parsed.summary.slice(0, 50)
+        : trimmedText.slice(0, 50);
+      category = CATEGORIES.includes(parsed.category)
+        ? parsed.category
+        : "기타";
+    } catch {
+      // JSON 파싱 실패 fallback
+      summary = trimmedText.slice(0, 50);
+      category = "기타";
+    }
 
-    return NextResponse.json({
-      summary,
-      category,
-      ...(remaining !== undefined && { remaining }),
-    });
+    return NextResponse.json({ summary, category, remaining });
   } catch (err) {
     console.error("Summarize error:", err);
     return NextResponse.json(

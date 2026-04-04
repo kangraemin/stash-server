@@ -9,6 +9,7 @@ export async function isPremiumUser(deviceId: string): Promise<boolean> {
           Authorization: `Bearer ${REVENUECAT_API_KEY()}`,
           "Content-Type": "application/json",
         },
+        signal: AbortSignal.timeout(3000),
       }
     );
 
