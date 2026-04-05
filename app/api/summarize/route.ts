@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import { isPremiumUser } from "@/lib/revenuecat";
 import { checkAndIncrement } from "@/lib/ratelimit";
 
@@ -66,30 +66,25 @@ export async function POST(req: NextRequest) {
   const trimmedText = text.slice(0, MAX_TEXT_LENGTH);
 
   try {
-    const anthropic = new Anthropic();
+    const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY! });
 
-    const message = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 200,
-      temperature: 0,
-      messages: [
-        { role: "user", content: buildPrompt(trimmedText, lang) },
-      ],
+    const response = await ai.models.generateContent({
+      model: "gemma-4-31b-it",
+      contents: buildPrompt(trimmedText, lang),
+      config: {
+        maxOutputTokens: 200,
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
     });
 
-    const content = message.content[0];
-    if (content.type !== "text") {
-      return NextResponse.json(
-        { error: "Unexpected response from AI." },
-        { status: 500 }
-      );
-    }
+    const text = response.text ?? "";
 
     let summary: string;
     let category: string;
 
     try {
-      const parsed = JSON.parse(content.text);
+      const parsed = JSON.parse(text);
       summary = typeof parsed.summary === "string"
         ? parsed.summary.slice(0, 50)
         : trimmedText.slice(0, 50);
